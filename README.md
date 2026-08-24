@@ -2,6 +2,8 @@
 
 Clipboard Image Importer is an Adobe After Effects ScriptUI tool that saves an image from the system clipboard, imports it as footage, and can place it directly into the active composition.
 
+**Project status: Final Draft**
+
 ## Features
 
 - Paste a copied image or supported copied image file into After Effects
@@ -48,10 +50,6 @@ In After Effects preferences, enable **Allow Scripts to Write Files and Access N
 3. Click **Paste Image**.
 4. If an import fails, use **Open Debug Log** and keep the log for troubleshooting.
 
-## Platform Status
+## Status
 
-- macOS: working in current testing
-- Windows: implementation is present, but a known issue still prevents reliable operation and requires further debugging
-
-This repository is currently private and under active development. Do not treat the Windows path as production-ready yet.
-
+**Final Draft.** The current functionality is accepted and no further feature changes are planned before release. The repository remains private until the decision is made to publish it.
