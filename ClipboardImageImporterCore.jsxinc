@@ -1,0 +1,2261 @@
+/*
+    Clipboard Image Importer.jsx
+    Dockable Adobe After Effects ScriptUI panel.
+*/
+
+(function (thisObj) {
+    var SCRIPT_NAME = "Clipboard Image Importer";
+    var SETTINGS_SECTION = "ClipboardImageImporter";
+    var KEY_STORAGE_FOLDER = "StorageFolder";
+    var KEY_ADD_TO_COMP = "AddToActiveComposition";
+    var KEY_PLACE_AT_TIME = "PlaceAtCurrentTime";
+    var KEY_CENTER_IN_COMP = "CenterInComposition";
+    var KEY_SCALING_MODE = "ScalingMode";
+    var KEY_COMPACT_MODE = "CompactMode";
+    var KEY_STORE_BESIDE_PROJECT = "StoreBesideProject";
+    var IMPORT_FOLDER_NAME = "Clipboard Imports";
+    var UNDO_GROUP_NAME = "Import from Clipboard";
+    var SUPPORT_FOLDER_NAME = "AE Clipboard Importer";
+    var RUNTIME_FOLDER_NAME = "runtime";
+    var DEBUG_FILE_NAME = "clipboard_importer_debug.log";
+    var PROTOCOL_OK = "AE_CLIPBOARD_OK|";
+    var PROTOCOL_ERROR = "AE_CLIPBOARD_ERROR|";
+    var PROTOCOL_READY = "AE_HELPER_READY";
+    var MAC_OSASCRIPT_PATH = "/usr/bin/osascript";
+    var IS_WINDOWS = ($.os.toLowerCase().indexOf("windows") >= 0);
+    var IS_MAC = (!IS_WINDOWS && $.os.toLowerCase().indexOf("mac") >= 0);
+
+    var state = {
+        folderPath: "",
+        isRunning: false,
+        compactMode: true,
+        win: null,
+        ui: null,
+        lastLogPath: "",
+        lastLogError: ""
+    };
+
+    function buildUI(hostObject) {
+        var isPanel = (typeof Panel !== "undefined" && hostObject instanceof Panel);
+        var win = isPanel ? hostObject : new Window("palette", SCRIPT_NAME, undefined, { resizeable: true });
+
+        win.orientation = "column";
+        win.alignChildren = ["fill", "top"];
+        win.spacing = 8;
+        win.margins = 12;
+
+        var headerGroup = win.add("group");
+        headerGroup.orientation = "row";
+        headerGroup.alignChildren = ["fill", "center"];
+        headerGroup.alignment = ["fill", "top"];
+        headerGroup.spacing = 8;
+
+        var title = headerGroup.add("statictext", undefined, SCRIPT_NAME);
+        title.alignment = ["fill", "center"];
+        try {
+            title.graphics.font = ScriptUI.newFont(title.graphics.font.name, "BOLD", title.graphics.font.size + 1);
+        } catch (fontError) {
+        }
+
+        var settingsButton = headerGroup.add("button", undefined, "Settings");
+        settingsButton.alignment = ["right", "center"];
+
+        var importButton = win.add("button", undefined, "Paste Image");
+        importButton.alignment = ["fill", "top"];
+        importButton.preferredSize.height = 42;
+
+        var statusText = win.add("statictext", undefined, "Status: Ready");
+        statusText.alignment = ["fill", "top"];
+        statusText.characters = 48;
+
+        var settingsGroup = win.add("group");
+        settingsGroup.orientation = "column";
+        settingsGroup.alignChildren = ["fill", "top"];
+        settingsGroup.alignment = ["fill", "top"];
+        settingsGroup.spacing = 8;
+
+        var storeBesideProjectCheckbox = settingsGroup.add("checkbox", undefined, "Store beside saved project");
+        storeBesideProjectCheckbox.alignment = ["fill", "top"];
+        storeBesideProjectCheckbox.value = false;
+
+        var folderLabel = settingsGroup.add("statictext", undefined, "Fallback Storage Folder");
+        folderLabel.alignment = ["fill", "top"];
+
+        var folderField = settingsGroup.add("edittext", undefined, "", { readonly: true });
+        folderField.alignment = ["fill", "top"];
+        folderField.characters = 44;
+
+        var folderButtons = settingsGroup.add("group");
+        folderButtons.orientation = "row";
+        folderButtons.alignChildren = ["fill", "top"];
+        folderButtons.alignment = ["fill", "top"];
+        folderButtons.spacing = 6;
+
+        var browseButton = folderButtons.add("button", undefined, "Browse...");
+        browseButton.alignment = ["fill", "top"];
+
+        var openFolderButton = folderButtons.add("button", undefined, "Open Folder");
+        openFolderButton.alignment = ["fill", "top"];
+
+        var openLogButton = folderButtons.add("button", undefined, "Open Debug Log");
+        openLogButton.alignment = ["fill", "top"];
+
+        var addToCompCheckbox = settingsGroup.add("checkbox", undefined, "Add to Active Composition");
+        addToCompCheckbox.alignment = ["fill", "top"];
+        addToCompCheckbox.value = true;
+
+        var placeAtTimeCheckbox = settingsGroup.add("checkbox", undefined, "Place at Current Time");
+        placeAtTimeCheckbox.alignment = ["fill", "top"];
+        placeAtTimeCheckbox.value = true;
+
+        var centerCheckbox = settingsGroup.add("checkbox", undefined, "Center in Composition");
+        centerCheckbox.alignment = ["fill", "top"];
+        centerCheckbox.value = true;
+
+        var scaleGroup = settingsGroup.add("group");
+        scaleGroup.orientation = "row";
+        scaleGroup.alignChildren = ["left", "center"];
+        scaleGroup.alignment = ["fill", "top"];
+        scaleGroup.spacing = 6;
+
+        var scaleLabel = scaleGroup.add("statictext", undefined, "Layer Scaling:");
+        scaleLabel.alignment = ["left", "center"];
+
+        var scalingDropdown = scaleGroup.add("dropdownlist", undefined, ["None", "Fit", "Fill"]);
+        scalingDropdown.alignment = ["fill", "center"];
+        scalingDropdown.selection = 1;
+
+        state.ui = {
+            settingsButton: settingsButton,
+            settingsGroup: settingsGroup,
+            folderField: folderField,
+            browseButton: browseButton,
+            openFolderButton: openFolderButton,
+            openLogButton: openLogButton,
+            storeBesideProjectCheckbox: storeBesideProjectCheckbox,
+            addToCompCheckbox: addToCompCheckbox,
+            placeAtTimeCheckbox: placeAtTimeCheckbox,
+            centerCheckbox: centerCheckbox,
+            scalingDropdown: scalingDropdown,
+            importButton: importButton,
+            statusText: statusText
+        };
+
+        browseButton.onClick = function () {
+            chooseStorageFolder(false);
+        };
+        openFolderButton.onClick = function () {
+            openStorageFolder();
+        };
+        openLogButton.onClick = function () {
+            openDebugLog();
+        };
+        settingsButton.onClick = function () {
+            setCompactMode(!state.compactMode, true);
+        };
+        storeBesideProjectCheckbox.onClick = function () {
+            saveSettings();
+            updateFolderControls();
+        };
+        addToCompCheckbox.onClick = function () {
+            saveSettings();
+        };
+        placeAtTimeCheckbox.onClick = function () {
+            saveSettings();
+        };
+        centerCheckbox.onClick = function () {
+            saveSettings();
+        };
+        scalingDropdown.onChange = function () {
+            saveSettings();
+        };
+        importButton.onClick = function () {
+            runImportWorkflow();
+        };
+
+        try {
+            win.addEventListener("keydown", function (event) {
+                handlePanelKeydown(event);
+            });
+        } catch (keyError) {
+        }
+
+        win.onResizing = win.onResize = function () {
+            this.layout.resize();
+        };
+
+        state.win = win;
+        loadSettings();
+        updateFolderControls();
+        refreshLayout();
+
+        return win;
+    }
+
+    function loadSettings() {
+        var savedFolder = getSetting(KEY_STORAGE_FOLDER, "");
+        var folder;
+
+        state.compactMode = (getSetting(KEY_COMPACT_MODE, "1") !== "0");
+
+        if (state.ui) {
+            state.ui.storeBesideProjectCheckbox.value = (getSetting(KEY_STORE_BESIDE_PROJECT, "0") !== "0");
+            state.ui.addToCompCheckbox.value = (getSetting(KEY_ADD_TO_COMP, "1") !== "0");
+            state.ui.placeAtTimeCheckbox.value = (getSetting(KEY_PLACE_AT_TIME, "1") !== "0");
+            state.ui.centerCheckbox.value = (getSetting(KEY_CENTER_IN_COMP, "1") !== "0");
+            setDropdownSelection(state.ui.scalingDropdown, getSetting(KEY_SCALING_MODE, "Fit"));
+        }
+
+        if (savedFolder !== "") {
+            folder = new Folder(savedFolder);
+            if (folder.exists) {
+                state.folderPath = folder.fsName;
+                setStatus("Ready");
+            } else {
+                state.folderPath = "";
+                saveSetting(KEY_STORAGE_FOLDER, "");
+                setStatus("Select a storage folder");
+            }
+        } else {
+            state.folderPath = "";
+            setStatus("Select a storage folder");
+        }
+
+        updateFolderControls();
+        applyCompactMode();
+    }
+
+    function saveSettings() {
+        saveSetting(KEY_STORAGE_FOLDER, state.folderPath);
+        saveSetting(KEY_COMPACT_MODE, state.compactMode ? "1" : "0");
+        if (state.ui) {
+            saveSetting(KEY_STORE_BESIDE_PROJECT, state.ui.storeBesideProjectCheckbox.value ? "1" : "0");
+            saveSetting(KEY_ADD_TO_COMP, state.ui.addToCompCheckbox.value ? "1" : "0");
+            saveSetting(KEY_PLACE_AT_TIME, state.ui.placeAtTimeCheckbox.value ? "1" : "0");
+            saveSetting(KEY_CENTER_IN_COMP, state.ui.centerCheckbox.value ? "1" : "0");
+            saveSetting(KEY_SCALING_MODE, getSelectedScalingMode());
+        }
+    }
+
+    function setCompactMode(compactMode, persist) {
+        state.compactMode = !!compactMode;
+        applyCompactMode();
+        if (persist) {
+            saveSettings();
+        }
+    }
+
+    function applyCompactMode() {
+        if (!state.ui || !state.ui.settingsGroup) {
+            return;
+        }
+        state.ui.settingsGroup.visible = !state.compactMode;
+        state.ui.settingsGroup.enabled = !state.compactMode;
+        if (state.ui.settingsButton) {
+            state.ui.settingsButton.text = state.compactMode ? "Settings" : "Hide";
+        }
+        refreshLayout();
+    }
+
+    function getStoreBesideProject() {
+        if (state.ui && state.ui.storeBesideProjectCheckbox) {
+            return !!state.ui.storeBesideProjectCheckbox.value;
+        }
+        return (getSetting(KEY_STORE_BESIDE_PROJECT, "0") !== "0");
+    }
+
+    function getSavedBooleanSetting(key, defaultValue) {
+        return (getSetting(key, defaultValue ? "1" : "0") !== "0");
+    }
+
+    function getCurrentImportOptions(activeComp) {
+        return {
+            addToComp: state.ui ? !!state.ui.addToCompCheckbox.value : getSavedBooleanSetting(KEY_ADD_TO_COMP, true),
+            placeAtCurrentTime: state.ui ? !!state.ui.placeAtTimeCheckbox.value : getSavedBooleanSetting(KEY_PLACE_AT_TIME, true),
+            centerInComp: state.ui ? !!state.ui.centerCheckbox.value : getSavedBooleanSetting(KEY_CENTER_IN_COMP, true),
+            scalingMode: getSelectedScalingMode(),
+            activeComp: activeComp
+        };
+    }
+
+    function getSavedProjectFile() {
+        try {
+            if (app.project && app.project.file) {
+                return app.project.file;
+            }
+        } catch (projectError) {
+        }
+        return null;
+    }
+
+    function getProjectStorageFolderForDisplay() {
+        var projectFile;
+
+        if (!getStoreBesideProject()) {
+            return null;
+        }
+
+        projectFile = getSavedProjectFile();
+        if (!projectFile || !projectFile.parent) {
+            return null;
+        }
+
+        return new Folder(projectFile.parent.fullName + "/Clipboard Images");
+    }
+
+    function getProjectStorageFolderIfEnabled(context) {
+        var folder = getProjectStorageFolderForDisplay();
+
+        if (!folder) {
+            return null;
+        }
+
+        try {
+            ensureFolderTree(folder);
+        } catch (folderError) {
+            throw makeScriptError(
+                "PROJECT_STORAGE_FOLDER_CREATION_FAILED",
+                "Storage folder creation failed",
+                "Could not create the project Clipboard Images folder.\nFolder URI: " + folder.fullName + "\nFolder native path: " + folder.fsName + "\n" + describeException(folderError),
+                context
+            );
+        }
+
+        return folder;
+    }
+
+    function resolveStorageFolderForImport(allowFolderSelection, context) {
+        var projectFolder;
+        var writable;
+
+        projectFolder = getProjectStorageFolderIfEnabled(context);
+        if (projectFolder) {
+            setStage(context, "Validating project storage folder");
+            recordSelectedFolderDiagnostics(context, projectFolder);
+            writable = testFolderWritable(projectFolder, context);
+            if (!writable.ok) {
+                if (context) {
+                    context.exceptionText = writable.message;
+                }
+                throw makeScriptError("PROJECT_STORAGE_FOLDER_WRITE_TEST_FAILED", writable.status, writable.message, context);
+            }
+            return projectFolder;
+        }
+
+        if (state.folderPath === "") {
+            if (allowFolderSelection === false) {
+                throw makeScriptError("STORAGE_FOLDER_NOT_SELECTED", "Storage folder not selected", "Choose a folder where copied clipboard images can be saved.", context);
+            }
+            if (!chooseStorageFolder(true)) {
+                if (context) {
+                    context.stage = "Storage folder selection cancelled";
+                }
+                appendDiagnosticLog(context, "Attempt cancelled");
+                return null;
+            }
+        }
+
+        setStage(context, "Validating storage folder");
+        if (!validateStorageFolder(true, context)) {
+            appendDiagnosticLog(context, "Storage folder validation failed");
+            return null;
+        }
+
+        return new Folder(state.folderPath);
+    }
+
+    function getSetting(key, fallbackValue) {
+        try {
+            if (app.settings.haveSetting(SETTINGS_SECTION, key)) {
+                return String(app.settings.getSetting(SETTINGS_SECTION, key));
+            }
+        } catch (settingsError) {
+        }
+        return fallbackValue;
+    }
+
+    function saveSetting(key, value) {
+        try {
+            app.settings.saveSetting(SETTINGS_SECTION, key, String(value));
+            return true;
+        } catch (settingsError) {
+            return false;
+        }
+    }
+
+    function chooseStorageFolder(requiredForImport) {
+        var startFolder = null;
+        var selectedFolder = null;
+
+        if (state.folderPath !== "") {
+            startFolder = new Folder(state.folderPath);
+            if (!startFolder.exists) {
+                startFolder = null;
+            }
+        }
+
+        try {
+            selectedFolder = Folder.selectDialog("Select a storage folder for clipboard images", startFolder);
+        } catch (dialogError) {
+            setStatus("Storage folder not selected");
+            showDetailedError("Storage folder not selected", "After Effects could not open the folder-selection dialog.", null);
+            return false;
+        }
+
+        if (!selectedFolder) {
+            setStatus(requiredForImport ? "Storage folder not selected" : "Ready");
+            return false;
+        }
+
+        state.folderPath = selectedFolder.fsName;
+        updateFolderControls();
+        saveSettings();
+        setStatus("Storage folder selected");
+        return true;
+    }
+
+    function validateStorageFolder(showAlertOnFailure, context) {
+        var folder;
+        var writable;
+
+        if (state.folderPath === "") {
+            setStatus("Storage folder not selected");
+            if (showAlertOnFailure) {
+                showDetailedError("Storage folder not selected", "Choose a folder where copied clipboard images can be saved.", context);
+            }
+            return false;
+        }
+
+        folder = new Folder(state.folderPath);
+        recordSelectedFolderDiagnostics(context, folder);
+
+        if (!folder.exists) {
+            setStatus("Storage folder does not exist");
+            if (showAlertOnFailure) {
+                showDetailedError("Storage folder does not exist", "The selected storage folder could not be found.\nFolder URI: " + folder.fullName + "\nFolder native path: " + folder.fsName, context);
+            }
+            return false;
+        }
+
+        writable = testFolderWritable(folder, context);
+        if (!writable.ok) {
+            setStatus(writable.status);
+            if (context) {
+                context.exceptionText = writable.message;
+            }
+            if (showAlertOnFailure) {
+                showDetailedError(writable.status, writable.message, context);
+            }
+            return false;
+        }
+
+        state.folderPath = folder.fsName;
+        recordSelectedFolderDiagnostics(context, folder);
+        updateFolderControls();
+        return true;
+    }
+
+    function testFolderWritable(folder, context) {
+        try {
+            if (IS_WINDOWS) {
+                testWindowsFolderWritable(folder, context);
+            } else {
+                testGenericFolderWritable(folder, context);
+            }
+            return { ok: true, status: "Ready", message: "" };
+        } catch (writeError) {
+            return {
+                ok: false,
+                status: "Storage folder write test failed",
+                message: describeException(writeError)
+            };
+        }
+    }
+
+    function testWindowsFolderWritable(folder, context) {
+        var testFile;
+        var writeResult;
+        var writeError;
+        var closeResult;
+        var removeResult;
+
+        if (!(folder instanceof Folder)) {
+            folder = new Folder(folder);
+        }
+
+        if (!folder.exists) {
+            throw new Error("Selected storage folder does not exist.\nURI path: " + folder.fullName + "\nNative path: " + folder.fsName);
+        }
+
+        testFile = new File(folder.fullName + "/.__ae_clipboard_write_test_" + new Date().getTime() + "_" + Math.floor(Math.random() * 1000000) + ".tmp");
+        recordWriteTestDiagnostics(context, testFile, "");
+        testFile.encoding = "UTF-8";
+
+        if (!testFile.open("w")) {
+            recordWriteTestDiagnostics(context, testFile, testFile.error);
+            throw new Error(
+                "Could not create a test file in the selected storage folder.\n" +
+                "Folder URI: " + folder.fullName + "\n" +
+                "Folder native path: " + folder.fsName + "\n" +
+                "Test file URI: " + testFile.fullName + "\n" +
+                "Test file native path: " + testFile.fsName + "\n" +
+                "File error: " + safeString(testFile.error || "Unknown")
+            );
+        }
+
+        writeResult = testFile.write("AE Clipboard Importer write test");
+        writeError = testFile.error;
+        closeResult = testFile.close();
+        recordWriteTestDiagnostics(context, testFile, writeError || testFile.error);
+
+        if (!writeResult || !closeResult || !testFile.exists) {
+            try {
+                if (testFile.opened) {
+                    testFile.close();
+                }
+            } catch (ignoredCloseError) {
+            }
+            try {
+                if (testFile.exists) {
+                    testFile.remove();
+                }
+            } catch (ignoredRemoveError) {
+            }
+            throw new Error(
+                "The selected folder write test failed.\n" +
+                "Native folder: " + folder.fsName + "\n" +
+                "Test file native path: " + testFile.fsName + "\n" +
+                "File error: " + safeString(writeError || testFile.error || "Unknown")
+            );
+        }
+
+        removeResult = testFile.remove();
+        if (!removeResult && testFile.exists) {
+            recordWriteTestDiagnostics(context, testFile, testFile.error);
+            throw new Error(
+                "The write test succeeded, but the temporary test file could not be removed.\n" +
+                "Test file: " + testFile.fsName + "\n" +
+                "File error: " + safeString(testFile.error || "Unknown")
+            );
+        }
+    }
+
+    function testGenericFolderWritable(folder, context) {
+        var testFile;
+        if (!(folder instanceof Folder)) {
+            folder = new Folder(folder);
+        }
+        if (!folder.exists) {
+            throw new Error("Selected storage folder does not exist.\nURI path: " + folder.fullName + "\nNative path: " + folder.fsName);
+        }
+        testFile = new File(folder.fullName + "/.__ae_clipboard_write_test_" + makeTimestamp() + "_" + randomDigits(4) + ".tmp");
+        recordWriteTestDiagnostics(context, testFile, "");
+        testFile.encoding = "UTF-8";
+        testFile.lineFeed = "Unix";
+        if (!testFile.open("w")) {
+            recordWriteTestDiagnostics(context, testFile, testFile.error);
+            throw new Error("Could not create a test file in the selected storage folder.\nFolder URI: " + folder.fullName + "\nFolder native path: " + folder.fsName + "\nTest file URI: " + testFile.fullName + "\nTest file native path: " + testFile.fsName + "\nFile error: " + safeString(testFile.error || "Unknown"));
+        }
+        if (!testFile.write("AE Clipboard Importer write test")) {
+            testFile.close();
+            throw new Error("The selected folder write test failed.\nNative folder: " + folder.fsName + "\nFile error: " + safeString(testFile.error || "Unknown"));
+        }
+        if (!testFile.close()) {
+            throw new Error("Could not close the write-test file.\nTest file: " + testFile.fsName + "\nFile error: " + safeString(testFile.error || "Unknown"));
+        }
+        if (testFile.exists) {
+            testFile.remove();
+        }
+    }
+
+    function openStorageFolder() {
+        var folder = null;
+
+        try {
+            folder = getProjectStorageFolderIfEnabled(null);
+        } catch (folderError) {
+            if (folderError && folderError.isClipboardImporterError) {
+                showDetailedError(folderError.status, folderError.detail, null);
+            } else {
+                showDetailedError("Storage folder unavailable", describeException(folderError), null);
+            }
+            return;
+        }
+
+        if (!folder && state.folderPath !== "") {
+            folder = new Folder(state.folderPath);
+        }
+
+        if (!folder) {
+            setStatus("Storage folder not selected");
+            return;
+        }
+
+        if (!folder.exists) {
+            setStatus("Folder does not exist");
+            showDetailedError("Folder does not exist", "The selected storage folder no longer exists. Choose a new folder.", null);
+            updateFolderControls();
+            return;
+        }
+
+        try {
+            if (IS_WINDOWS) {
+                system.callSystem("explorer.exe " + quoteWindowsArgument(folder.fsName));
+            } else if (IS_MAC) {
+                system.callSystem("open " + quoteForMacShell(folder.fsName) + " 2>&1");
+            } else {
+                showDetailedError("Unsupported operating system", "This panel supports Windows and macOS.", null);
+            }
+        } catch (openError) {
+            showDetailedError("Unexpected error", "After Effects could not open the selected folder. " + describeException(openError), null);
+        }
+    }
+
+    function openDebugLog() {
+        var logPath = state.lastLogPath;
+        var logFile;
+
+        if (logPath === "") {
+            logFile = getDebugLogFile(null);
+            if (logFile) {
+                logPath = logFile.fsName;
+            }
+        }
+
+        if (logPath === "") {
+            showDetailedError("Debug log unavailable", "The debug log has not been created yet.", null);
+            return;
+        }
+
+        logFile = new File(logPath);
+        if (!logFile.exists) {
+            showDetailedError("Debug log unavailable", "The debug log does not exist yet:\n" + logPath, null);
+            return;
+        }
+
+        try {
+            if (IS_WINDOWS) {
+                system.callSystem("explorer.exe /select," + quoteWindowsArgument(logFile.fsName));
+            } else if (IS_MAC) {
+                system.callSystem("open " + quoteForMacShell(logFile.fsName) + " 2>&1");
+            }
+        } catch (openError) {
+            showDetailedError("Debug log unavailable", "Could not open the debug log.\n\n" + describeException(openError), null);
+        }
+    }
+
+    function detectOperatingSystem() {
+        if (IS_WINDOWS) {
+            return "windows";
+        }
+        if (IS_MAC) {
+            return "mac";
+        }
+        return "unsupported";
+    }
+
+    function runImportWorkflow() {
+        importImageFromClipboard({
+            allowFolderSelection: true
+        });
+    }
+
+    function importImageFromClipboard(importOptions) {
+        if (state.isRunning) {
+            return false;
+        }
+
+        importOptions = importOptions || {};
+
+        var context = createAttemptContext();
+        var undoStarted = false;
+        var statusOnSuccess = "Imported successfully";
+        var storageFolder;
+        var destinationFile;
+        var helperResponse;
+        var activeComp;
+        var options;
+        var savedImage;
+        var importResult;
+
+        state.isRunning = true;
+        setImportButtonEnabled(false);
+
+        try {
+            appendDiagnosticLog(context, "Attempt started");
+
+            if (detectOperatingSystem() === "unsupported") {
+                throw makeScriptError("UNSUPPORTED_OS", "Unexpected error", "Clipboard Image Importer supports Windows and macOS.", context);
+            }
+
+            loadSettings();
+            storageFolder = resolveStorageFolderForImport(importOptions.allowFolderSelection !== false, context);
+            if (!storageFolder) {
+                return false;
+            }
+
+            destinationFile = generateUniqueDestinationFile(storageFolder, "png");
+            context.destinationFullName = destinationFile.fullName;
+            context.destinationNativePath = destinationFile.fsName;
+            context.destinationPath = destinationFile.fsName;
+
+            activeComp = getActiveComp();
+            options = getCurrentImportOptions(activeComp);
+
+            helperResponse = runClipboardHelper(destinationFile, context);
+            context.parsedResponse = helperResponse.ok ? "OK" : ("ERROR " + helperResponse.code + ": " + helperResponse.message);
+            context.rawOutput = helperResponse.rawOutput || context.rawOutput;
+            context.returnedPath = helperResponse.path || "";
+
+            if (!helperResponse.ok) {
+                throw helperFailureToScriptError(helperResponse, context);
+            }
+
+            setStage(context, "Validating saved image");
+            savedImage = validateSavedImage(helperResponse.path, storageFolder, context, true);
+
+            setStage(context, "Importing into After Effects");
+            app.beginUndoGroup(UNDO_GROUP_NAME);
+            undoStarted = true;
+
+            importResult = importImageIntoAfterEffects(savedImage, options, context);
+
+            if (!options.addToComp || !importResult.layerAdded) {
+                statusOnSuccess = "Imported into Project panel";
+            }
+
+            setStatus(statusOnSuccess);
+            context.stage = statusOnSuccess;
+            appendDiagnosticLog(context, "Attempt succeeded");
+            return true;
+        } catch (workflowError) {
+            handleWorkflowError(workflowError, context);
+            return false;
+        } finally {
+            if (undoStarted) {
+                try {
+                    app.endUndoGroup();
+                } catch (undoError) {
+                    context.exceptionText = context.exceptionText + "\nUndo close error: " + describeException(undoError);
+                }
+            }
+            state.isRunning = false;
+            setImportButtonEnabled(true);
+            refreshLayout();
+        }
+    }
+
+    function runClipboardHelper(destinationFile, context) {
+        var helperFile = null;
+        var command = "";
+        var output = "";
+        var result = null;
+        var resultFile = null;
+        var processLogFile = null;
+
+        try {
+            if (IS_WINDOWS) {
+                setStage(context, "Creating clipboard helper");
+                helperFile = createWindowsClipboardHelper(context);
+                resultFile = createWindowsRuntimeSidecarFile(".result.txt", context, "result");
+                processLogFile = createWindowsRuntimeSidecarFile(".process.log", context, "processLog");
+                removeFileIfExists(resultFile);
+                removeFileIfExists(processLogFile);
+                command = buildWindowsPowerShellCommand(helperFile, destinationFile, resultFile, processLogFile, context);
+                context.command = command;
+                setStage(context, "Reading Windows clipboard");
+                output = system.callSystem(command);
+                context.rawOutput = safeString(output);
+                result = readWindowsHelperResult(resultFile, processLogFile, output, context);
+            } else if (IS_MAC) {
+                setStage(context, "Creating clipboard helper");
+                helperFile = createMacClipboardHelper(context);
+                setStage(context, "Testing clipboard helper");
+                result = runMacHelperSelfTest(helperFile, context);
+                if (result.ok) {
+                    setStage(context, "Reading macOS clipboard");
+                    command = MAC_OSASCRIPT_PATH + " -l JavaScript " + quoteForMacShell(helperFile.fsName) + " " + quoteForMacShell(destinationFile.fsName) + " 2>&1";
+                    context.command = command;
+                    output = system.callSystem(command);
+                    context.rawOutput = safeString(output);
+                    result = parseHelperResponse(output);
+                }
+            } else {
+                result = makeHelperError("HELPER_EXECUTION_FAILED", "Unsupported operating system.", "");
+            }
+        } catch (helperError) {
+            if (helperError && helperError.isClipboardImporterError) {
+                result = makeHelperError(helperError.code, helperError.detail, context.rawOutput);
+            } else {
+                result = makeHelperError("HELPER_EXECUTION_FAILED", describeException(helperError), context.rawOutput);
+            }
+            context.exceptionText = describeException(helperError);
+            context.exceptionLine = getExceptionLine(helperError);
+            context.scriptSource = getExceptionFileName(helperError);
+        }
+
+        deleteTemporaryHelper(helperFile, context);
+        cleanupWindowsSidecarFiles(resultFile, processLogFile, result, context);
+        return result;
+    }
+
+    function runMacHelperSelfTest(helperFile, context) {
+        var command = MAC_OSASCRIPT_PATH + " -l JavaScript " + quoteForMacShell(helperFile.fsName) + " " + quoteForMacShell("--self-test") + " 2>&1";
+        var output = "";
+        var lines;
+        var i;
+        var line;
+
+        context.command = command;
+        try {
+            output = system.callSystem(command);
+            context.selfTestOutput = safeString(output);
+            context.rawOutput = safeString(output);
+        } catch (selfTestError) {
+            context.exceptionText = describeException(selfTestError);
+            context.exceptionLine = getExceptionLine(selfTestError);
+            context.scriptSource = getExceptionFileName(selfTestError);
+            return makeHelperError("HELPER_EXECUTION_FAILED", "The macOS clipboard helper did not execute. " + describeException(selfTestError), context.rawOutput);
+        }
+
+        if (trimString(output) === "") {
+            return makeHelperError("HELPER_EXECUTION_FAILED", "The macOS clipboard helper self-test returned no output.", output);
+        }
+
+        lines = normalizeLineEndings(output).split("\n");
+        for (i = 0; i < lines.length; i += 1) {
+            line = trimString(lines[i]);
+            if (line === PROTOCOL_READY) {
+                return { ok: true, path: "", code: "", message: "", rawOutput: output };
+            }
+        }
+
+        return makeHelperError("HELPER_EXECUTION_FAILED", "The macOS clipboard helper did not return AE_HELPER_READY during self-test. Raw output: " + output, output);
+    }
+
+    function createWindowsRuntimeSidecarFile(extension, context, sidecarType) {
+        var runtimeFolder = getWindowsHelperRuntimeFolder(context);
+        var file = new File(runtimeFolder.fullName + "/ae_clipboard_helper_" + makeTimestamp() + "_" + randomDigits(6) + extension);
+
+        if (sidecarType === "result") {
+            context.resultFileFullName = file.fullName;
+            context.resultFileNativePath = file.fsName;
+        } else if (sidecarType === "processLog") {
+            context.processLogFullName = file.fullName;
+            context.processLogNativePath = file.fsName;
+        }
+
+        return file;
+    }
+
+    function buildWindowsPowerShellCommand(helperFile, destinationFile, resultFile, processLogFile, context) {
+        var powerShellExecutable = getWindowsPowerShellExecutable();
+        var cmdExecutable = getWindowsCmdExecutable();
+        var innerCommand;
+
+        context.resolvedPowerShellExecutable = powerShellExecutable;
+        context.resolvedCmdExecutable = cmdExecutable;
+
+        innerCommand = quoteWindowsArgument(powerShellExecutable) +
+            " -NoLogo -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass -File " +
+            quoteWindowsArgument(helperFile.fsName) +
+            " -DestinationPath " + quoteWindowsArgument(destinationFile.fsName) +
+            " -ResultPath " + quoteWindowsArgument(resultFile.fsName) +
+            " > " + quoteWindowsArgument(processLogFile.fsName) + " 2>&1" +
+            " & echo AE_POWERSHELL_EXIT_CODE:!ERRORLEVEL! >> " + quoteWindowsArgument(processLogFile.fsName);
+
+        return quoteWindowsArgument(cmdExecutable) + " /d /s /v:on /c " + quoteWindowsCmdOuterArgument(innerCommand);
+    }
+
+    function readWindowsHelperResult(resultFile, processLogFile, callSystemOutput, context) {
+        var resultText = "";
+        var processText = "";
+        var parsed;
+
+        updateWindowsResultDiagnostics(resultFile, processLogFile, context);
+        processText = readTextFileIfExists(processLogFile);
+        context.processLogContents = processText;
+        context.rawOutput = "system.callSystem returned:\n" + safeString(callSystemOutput) + "\n\nProcess output log:\n" + processText;
+
+        if (resultFile && resultFile.exists) {
+            resultText = readTextFileIfExists(resultFile);
+            updateWindowsResultDiagnostics(resultFile, processLogFile, context);
+
+            if (trimString(resultText) === "") {
+                return makeHelperError("RESULT_COMMUNICATION_FAILED", "Result file was created but contains no protocol response.\nResult file: " + resultFile.fsName + "\nProcess output:\n" + processText, context.rawOutput);
+            }
+
+            parsed = parseHelperResponse(resultText);
+            parsed.rawOutput = context.rawOutput;
+            return parsed;
+        }
+
+        if (processLogFile && processLogFile.exists) {
+            if (processText !== "") {
+                return makeHelperError("RESULT_COMMUNICATION_FAILED", "PowerShell did not create a result file.\nResult file: " + resultFile.fsName + "\nProcess output:\n" + processText, context.rawOutput);
+            }
+            return makeHelperError("RESULT_COMMUNICATION_FAILED", "PowerShell did not create a result file, and the process output log is empty.\nResult file: " + resultFile.fsName + "\nCommand: " + context.command, context.rawOutput);
+        }
+
+        return makeHelperError("HELPER_LAUNCH_FAILED", "cmd.exe or PowerShell did not create a result file or process output log.\nResult file: " + resultFile.fsName + "\nProcess log: " + processLogFile.fsName + "\nCommand: " + context.command + "\nsystem.callSystem returned: " + safeString(callSystemOutput), context.rawOutput);
+    }
+
+    function updateWindowsResultDiagnostics(resultFile, processLogFile, context) {
+        if (!context) {
+            return;
+        }
+
+        if (resultFile) {
+            context.resultFileFullName = resultFile.fullName;
+            context.resultFileNativePath = resultFile.fsName;
+            try {
+                context.resultFileExistsAfterExecution = resultFile.exists ? "true" : "false";
+                context.resultFileLength = resultFile.exists ? String(resultFile.length) : "";
+            } catch (resultLengthError) {
+                context.resultFileLength = "Could not read result-file length: " + describeException(resultLengthError);
+            }
+        }
+
+        if (processLogFile) {
+            context.processLogFullName = processLogFile.fullName;
+            context.processLogNativePath = processLogFile.fsName;
+            try {
+                context.processLogExistsAfterExecution = processLogFile.exists ? "true" : "false";
+                context.processLogLength = processLogFile.exists ? String(processLogFile.length) : "";
+            } catch (processLengthError) {
+                context.processLogLength = "Could not read process-log length: " + describeException(processLengthError);
+            }
+        }
+    }
+
+    function readTextFileIfExists(file) {
+        var text = "";
+
+        if (!file || !file.exists) {
+            return "";
+        }
+
+        try {
+            file.encoding = "UTF-8";
+            if (!file.open("r")) {
+                return "";
+            }
+            text = file.read();
+            file.close();
+        } catch (readError) {
+            try {
+                file.close();
+            } catch (closeError) {
+            }
+            text = "Could not read file: " + describeException(readError);
+        }
+
+        return safeString(text);
+    }
+
+    function cleanupWindowsSidecarFiles(resultFile, processLogFile, result, context) {
+        if (!IS_WINDOWS) {
+            return;
+        }
+
+        if (resultFile && resultFile.exists) {
+            try {
+                resultFile.remove();
+            } catch (resultCleanupError) {
+                context.resultFileCleanupError = describeException(resultCleanupError);
+            }
+        }
+
+        if (result && result.ok && processLogFile && processLogFile.exists) {
+            try {
+                processLogFile.remove();
+            } catch (processCleanupError) {
+                context.processLogCleanupError = describeException(processCleanupError);
+            }
+        }
+    }
+
+    function removeFileIfExists(file) {
+        try {
+            if (file && file.exists) {
+                file.remove();
+            }
+        } catch (removeError) {
+        }
+    }
+
+    function createWindowsClipboardHelper(context) {
+        var source = getWindowsClipboardHelperSource();
+        return createWindowsHelperFile(source, context);
+    }
+
+    function createMacClipboardHelper(context) {
+        var source = getMacClipboardHelperSource();
+        return createMacHelperFile(source, context);
+    }
+
+    function ensureFolderTree(folder) {
+        var missing;
+        var current;
+        var parent;
+        var i;
+
+        if (folder.exists) {
+            return folder;
+        }
+
+        missing = [];
+        current = folder;
+
+        while (current && !current.exists) {
+            missing.push(current);
+            parent = current.parent;
+            if (!parent || parent.fullName === current.fullName) {
+                break;
+            }
+            current = parent;
+        }
+
+        for (i = missing.length - 1; i >= 0; i -= 1) {
+            if (!missing[i].exists) {
+                if (!missing[i].create() && !missing[i].exists) {
+                    throw makeScriptError("RUNTIME_FOLDER_CREATION_FAILED", "Runtime folder creation failed", "Could not create folder.\nURI path: " + missing[i].fullName + "\nNative path: " + missing[i].fsName + "\nFolder error: " + safeString(missing[i].error || "Unknown"), null);
+                }
+            }
+        }
+
+        if (!folder.exists) {
+            throw makeScriptError("RUNTIME_FOLDER_CREATION_FAILED", "Runtime folder creation failed", "Folder still does not exist after creation.\nURI path: " + folder.fullName + "\nNative path: " + folder.fsName, null);
+        }
+
+        return folder;
+    }
+
+    function getSupportFolder() {
+        var folder = new Folder(Folder.userData.fullName + "/" + SUPPORT_FOLDER_NAME);
+        ensureFolderTree(folder);
+        return folder;
+    }
+
+    function getWindowsHelperRuntimeFolder(context) {
+        var baseFolder = getSupportFolder();
+        var runtimeFolder = new Folder(baseFolder.fullName + "/" + RUNTIME_FOLDER_NAME);
+        ensureFolderTree(runtimeFolder);
+        recordRuntimeFolderDiagnostics(context, runtimeFolder);
+        if (IS_WINDOWS) {
+            testWindowsFolderWritable(runtimeFolder, null);
+        }
+        return runtimeFolder;
+    }
+
+    function getMacHelperRuntimeFolder(context) {
+        var baseFolder = new Folder(Folder.userData.fullName + "/" + SUPPORT_FOLDER_NAME);
+        var runtimeFolder;
+        ensureFolderTree(baseFolder);
+        runtimeFolder = new Folder(baseFolder.fullName + "/" + RUNTIME_FOLDER_NAME);
+        ensureFolderTree(runtimeFolder);
+        recordRuntimeFolderDiagnostics(context, runtimeFolder);
+        return runtimeFolder;
+    }
+
+    function createWindowsHelperFile(powerShellSource, context) {
+        var runtimeFolder = getWindowsHelperRuntimeFolder(context);
+        var helperFile = new File(runtimeFolder.fullName + "/ae_clipboard_helper_" + makeTimestamp() + "_" + randomDigits(6) + ".ps1");
+        return writeHelperFile(helperFile, powerShellSource, "Windows PowerShell", context);
+    }
+
+    function createMacHelperFile(jxaSource, context) {
+        var runtimeFolder = getMacHelperRuntimeFolder(context);
+        var helperFile = new File(runtimeFolder.fullName + "/ae_clipboard_helper_" + makeTimestamp() + "_" + randomDigits(6) + ".js");
+        return writeHelperFile(helperFile, jxaSource, "macOS JXA", context);
+    }
+
+    function writeHelperFile(helperFile, source, helperType, context) {
+        var writeSucceeded = false;
+        var writeFileError = "";
+
+        recordHelperDiagnostics(context, helperFile);
+        helperFile.encoding = "UTF-8";
+        helperFile.lineFeed = "Unix";
+
+        if (!helperFile.open("w")) {
+            recordHelperDiagnostics(context, helperFile);
+            throw makeScriptError("HELPER_FILE_CREATION_FAILED", "Helper creation failed", "Could not open the " + helperType + " helper for writing.\nURI path: " + helperFile.fullName + "\nNative path: " + helperFile.fsName + "\nParent URI path: " + helperFile.parent.fullName + "\nParent native path: " + helperFile.parent.fsName + "\nParent exists: " + helperFile.parent.exists + "\nParent error: " + safeString(helperFile.parent.error || "None") + "\nFile error: " + safeString(helperFile.error || "Unknown"), context);
+        }
+
+        try {
+            writeSucceeded = helperFile.write(source);
+        } catch (writeError) {
+            try {
+                helperFile.close();
+            } catch (ignoredCloseError) {
+            }
+            throw makeScriptError("HELPER_FILE_WRITE_FAILED", "Helper writing failed", "Writing the " + helperType + " helper failed.\nError: " + describeException(writeError) + "\nURI path: " + helperFile.fullName + "\nNative path: " + helperFile.fsName, context);
+        }
+
+        if (!writeSucceeded) {
+            writeFileError = helperFile.error;
+            helperFile.close();
+            throw makeScriptError("HELPER_FILE_WRITE_FAILED", "Helper writing failed", "The " + helperType + " helper write operation returned false.\nFile error: " + safeString(writeFileError || "Unknown") + "\nURI path: " + helperFile.fullName + "\nNative path: " + helperFile.fsName, context);
+        }
+
+        if (!helperFile.close()) {
+            throw makeScriptError("HELPER_FILE_WRITE_FAILED", "Helper writing failed", "Could not close the " + helperType + " helper after writing.\nFile error: " + safeString(helperFile.error || "Unknown") + "\nURI path: " + helperFile.fullName + "\nNative path: " + helperFile.fsName, context);
+        }
+
+        recordHelperDiagnostics(context, helperFile);
+
+        if (!helperFile.exists) {
+            throw makeScriptError("HELPER_FILE_CREATION_FAILED", "Helper creation failed", "The " + helperType + " helper does not exist after writing.\nURI path: " + helperFile.fullName + "\nNative path: " + helperFile.fsName, context);
+        }
+
+        if (helperFile.length <= 0) {
+            try {
+                helperFile.remove();
+            } catch (ignoredRemoveError) {
+            }
+            throw makeScriptError("HELPER_FILE_WRITE_FAILED", "Helper writing failed", "The " + helperType + " helper is empty after writing.\nURI path: " + helperFile.fullName + "\nNative path: " + helperFile.fsName, context);
+        }
+
+        recordHelperDiagnostics(context, helperFile);
+        return helperFile;
+    }
+
+    function deleteTemporaryHelper(file, context) {
+        try {
+            if (file && file.exists) {
+                try {
+                    file.close();
+                } catch (closeError) {
+                }
+                file.remove();
+            }
+        } catch (deleteError) {
+            if (context) {
+                context.helperCleanupError = describeException(deleteError);
+            }
+        }
+    }
+
+    function parseHelperResponse(output) {
+        var text = safeString(output);
+        var lines;
+        var i;
+        var line;
+        var secondPipe;
+
+        if (trimString(text) === "") {
+            return makeHelperError("EMPTY_HELPER_RESPONSE", "The clipboard helper returned no output.", text);
+        }
+
+        text = normalizeLineEndings(text);
+        lines = text.split("\n");
+
+        for (i = 0; i < lines.length; i += 1) {
+            line = trimString(lines[i]);
+            if (startsWith(line, PROTOCOL_OK)) {
+                return { ok: true, path: line.substring(PROTOCOL_OK.length), code: "", message: "", rawOutput: output };
+            }
+            if (startsWith(line, PROTOCOL_ERROR)) {
+                secondPipe = line.indexOf("|", PROTOCOL_ERROR.length);
+                if (secondPipe < 0) {
+                    return makeHelperError("HELPER_EXECUTION_FAILED", "The clipboard helper returned an invalid error response. Raw output: " + text, output);
+                }
+                return makeHelperError(line.substring(PROTOCOL_ERROR.length, secondPipe), line.substring(secondPipe + 1), output);
+            }
+        }
+
+        return makeHelperError("HELPER_EXECUTION_FAILED", "The clipboard helper did not return a protocol line. Raw output: " + text, output);
+    }
+
+    function validateSavedImage(path, storageFolder, context, deleteEmptyCurrentFile) {
+        var file = new File(path);
+        var extension = getFileExtension(path);
+
+        context.returnedPath = path;
+        context.returnedFileExists = file.exists ? "true" : "false";
+        context.returnedFileSize = file.exists ? String(file.length) : "";
+
+        if (trimString(path) === "" || !file.exists) {
+            throw makeScriptError("DESTINATION_FILE_MISSING", "After Effects import failed", "The helper reported success, but the saved image file does not exist: " + path, context);
+        }
+
+        if (!isFileInsideFolder(file, storageFolder)) {
+            throw makeScriptError("INVALID_RETURNED_PATH", "After Effects import failed", "The helper returned a file outside the selected storage folder: " + path, context);
+        }
+
+        if (!isSupportedImageExtension(extension)) {
+            throw makeScriptError("UNSUPPORTED_CLIPBOARD_TYPE", "After Effects import failed", "The saved clipboard file has an unsupported extension: " + extension, context);
+        }
+
+        if (file.length <= 0) {
+            if (deleteEmptyCurrentFile) {
+                try {
+                    file.remove();
+                } catch (removeError) {
+                }
+            }
+            throw makeScriptError("ZERO_BYTE_FILE", "After Effects import failed", "The saved clipboard image is zero bytes: " + path, context);
+        }
+
+        return file;
+    }
+
+    function importImageIntoAfterEffects(imageFile, options, context) {
+        var importOptions;
+        var item;
+        var folder;
+        var layerAdded = false;
+
+        if (!app.project) {
+            try {
+                app.newProject();
+            } catch (projectError) {
+                throw makeScriptError("AFTER_EFFECTS_IMPORT_FAILED", "After Effects import failed", "After Effects could not create or access a project. " + describeException(projectError), context);
+            }
+        }
+
+        try {
+            importOptions = new ImportOptions(imageFile);
+            try {
+                if (importOptions.canImportAs(ImportAsType.FOOTAGE)) {
+                    importOptions.importAs = ImportAsType.FOOTAGE;
+                }
+            } catch (importAsError) {
+            }
+            try {
+                importOptions.sequence = false;
+            } catch (sequenceError) {
+            }
+
+            item = app.project.importFile(importOptions);
+            if (!item) {
+                throw new Error("No item returned from importFile.");
+            }
+
+            folder = getOrCreateClipboardProjectFolder();
+            try {
+                item.parentFolder = folder;
+            } catch (parentError) {
+            }
+
+            if (options.addToComp && options.activeComp) {
+                setStage(context, "Adding image to composition");
+                layerAdded = addImportedImageToActiveComposition(item, options.activeComp, options, context);
+            }
+        } catch (importError) {
+            if (importError && importError.isClipboardImporterError) {
+                throw importError;
+            }
+            throw makeScriptError("AFTER_EFFECTS_IMPORT_FAILED", "After Effects import failed", "The image was saved, but After Effects could not import it. " + describeException(importError), context);
+        }
+
+        return { item: item, layerAdded: layerAdded };
+    }
+
+    function getOrCreateClipboardProjectFolder() {
+        var i;
+        var item;
+        var rootFolder = app.project.rootFolder;
+
+        for (i = 1; i <= app.project.numItems; i += 1) {
+            item = app.project.item(i);
+            if (item instanceof FolderItem && item.name === IMPORT_FOLDER_NAME && item.parentFolder === rootFolder) {
+                return item;
+            }
+        }
+
+        return app.project.items.addFolder(IMPORT_FOLDER_NAME);
+    }
+
+    function addImportedImageToActiveComposition(importedItem, activeComp, options, context) {
+        var layer;
+        try {
+            layer = activeComp.layers.add(importedItem);
+            if (options.placeAtCurrentTime) {
+                layer.startTime = activeComp.time;
+            }
+            if (options.centerInComp) {
+                centerLayerInComposition(layer, activeComp);
+            }
+            applyLayerScaling(layer, activeComp, options.scalingMode);
+            return true;
+        } catch (layerError) {
+            throw makeScriptError("AFTER_EFFECTS_IMPORT_FAILED", "After Effects import failed", "The image imported, but After Effects could not add it to the active composition. " + describeException(layerError), context);
+        }
+    }
+
+    function applyLayerScaling(layer, comp, scalingMode) {
+        var sourceWidth;
+        var sourceHeight;
+        var scaleX;
+        var scaleY;
+        var scalePercent;
+        var scaleProperty;
+        var currentScale;
+
+        if (scalingMode === "None") {
+            return;
+        }
+
+        try {
+            sourceWidth = Number(layer.source.width);
+            sourceHeight = Number(layer.source.height);
+        } catch (dimensionError) {
+            return;
+        }
+
+        if (!isPositiveNumber(sourceWidth) || !isPositiveNumber(sourceHeight) || !isPositiveNumber(comp.width) || !isPositiveNumber(comp.height)) {
+            return;
+        }
+
+        scaleX = comp.width / sourceWidth;
+        scaleY = comp.height / sourceHeight;
+        scalePercent = (scalingMode === "Fill" ? Math.max(scaleX, scaleY) : Math.min(scaleX, scaleY)) * 100;
+
+        try {
+            scaleProperty = layer.property("ADBE Transform Group").property("ADBE Scale");
+            currentScale = scaleProperty.value;
+            if (currentScale.length >= 3) {
+                scaleProperty.setValue([scalePercent, scalePercent, currentScale[2]]);
+            } else {
+                scaleProperty.setValue([scalePercent, scalePercent]);
+            }
+        } catch (scaleError) {
+        }
+    }
+
+    function centerLayerInComposition(layer, comp) {
+        var positionProperty;
+        var currentPosition;
+
+        try {
+            positionProperty = layer.property("ADBE Transform Group").property("ADBE Position");
+            currentPosition = positionProperty.value;
+            if (currentPosition.length >= 3) {
+                positionProperty.setValue([comp.width / 2, comp.height / 2, currentPosition[2]]);
+            } else {
+                positionProperty.setValue([comp.width / 2, comp.height / 2]);
+            }
+        } catch (positionError) {
+        }
+    }
+
+    function getActiveComp() {
+        try {
+            if (app.project && app.project.activeItem && app.project.activeItem instanceof CompItem) {
+                return app.project.activeItem;
+            }
+        } catch (activeError) {
+        }
+        return null;
+    }
+
+    function helperFailureToScriptError(helperResponse, context) {
+        var code = helperResponse.code;
+        var detail = helperResponse.message;
+        var status = "Helper execution failed";
+
+        if (code === "RUNTIME_FOLDER_CREATION_FAILED") {
+            status = "Runtime folder creation failed";
+            detail = detail || "The helper runtime folder could not be created.";
+        } else if (code === "HELPER_FILE_CREATION_FAILED") {
+            status = "Helper creation failed";
+            detail = detail || "The clipboard helper could not be created.";
+        } else if (code === "HELPER_FILE_WRITE_FAILED") {
+            status = "Helper writing failed";
+            detail = detail || "The clipboard helper could not be written.";
+        } else if (code === "HELPER_LAUNCH_FAILED") {
+            status = "Helper launch failed";
+            detail = detail || "cmd.exe or PowerShell could not be started.";
+        } else if (code === "RESULT_COMMUNICATION_FAILED") {
+            status = "Result communication failed";
+            detail = detail || "PowerShell ran but did not write a readable result file.";
+        } else if (code === "POWERSHELL_RUNTIME_ERROR") {
+            status = "PowerShell helper failed";
+            detail = detail || "The PowerShell helper failed at runtime.";
+        } else if (code === "NO_IMAGE" || code === "UNSUPPORTED_CLIPBOARD_TYPE") {
+            status = "No image found in clipboard";
+            detail = detail || "No supported image was found in the clipboard.";
+        } else if (code === "IMAGE_EXPORT_FAILED" || code === "PNG_DATA_READ_FAILED" || code === "TIFF_CONVERSION_FAILED" || code === "FILE_COPY_FAILED" || code === "SOURCE_FILE_NOT_FOUND" || code === "DESTINATION_FILE_MISSING" || code === "ZERO_BYTE_FILE") {
+            status = "Clipboard image save failed";
+            detail = detail || "The clipboard image could not be saved.";
+        } else if (code === "EMPTY_HELPER_RESPONSE" || code === "HELPER_EXECUTION_FAILED" || code === "JXA_RUNTIME_ERROR" || code === "INVALID_ARGUMENT") {
+            status = "Helper execution failed";
+            detail = detail || "The clipboard helper failed before image data could be read.";
+        }
+
+        return makeScriptError(code, status, detail, context);
+    }
+
+    function handleWorkflowError(errorObject, context) {
+        var status = "Unexpected error";
+        var detail = "An unexpected error occurred.";
+
+        if (errorObject && errorObject.isClipboardImporterError) {
+            status = errorObject.status;
+            detail = errorObject.detail;
+            context.exceptionText = detail;
+            context.exceptionLine = errorObject.line || context.exceptionLine;
+        } else if (errorObject) {
+            detail = describeException(errorObject);
+            context.exceptionText = detail;
+            context.exceptionLine = getExceptionLine(errorObject);
+            context.scriptSource = getExceptionFileName(errorObject);
+        }
+
+        setStatus(status);
+        appendDiagnosticLog(context, "Attempt failed");
+        showDetailedError(status, detail, context);
+    }
+
+    function setStatus(message) {
+        if (state.ui && state.ui.statusText) {
+            state.ui.statusText.text = "Status: " + safeString(message);
+        }
+        refreshLayout();
+    }
+
+    function setStage(context, stage) {
+        if (context) {
+            context.stage = stage;
+        }
+        setStatus(stage);
+    }
+
+    function showDetailedError(title, message, context) {
+        var text = safeString(title) + "\n\n" + safeString(message);
+
+        if (context) {
+            text += "\n\nFailure stage: " + safeString(context.stage);
+            if (context.selectedFolderFullName !== "") {
+                text += "\nSelected folder URI: " + context.selectedFolderFullName;
+            }
+            if (context.selectedFolderNativePath !== "") {
+                text += "\nSelected folder native path: " + context.selectedFolderNativePath;
+            }
+            if (context.writeTestFileNativePath !== "") {
+                text += "\nWrite-test file native path: " + context.writeTestFileNativePath;
+            }
+            if (context.writeTestFileError !== "") {
+                text += "\nWrite-test File.error: " + context.writeTestFileError;
+            }
+            if (context.destinationNativePath !== "") {
+                text += "\nDestination native path: " + context.destinationNativePath;
+            }
+            if (context.helperNativePath !== "") {
+                text += "\nHelper native path: " + context.helperNativePath;
+            }
+            if (context.resultFileNativePath !== "") {
+                text += "\nResult file native path: " + context.resultFileNativePath;
+            }
+            if (context.processLogNativePath !== "") {
+                text += "\nProcess log native path: " + context.processLogNativePath;
+            }
+            if (context.exceptionText !== "") {
+                text += "\nJSX exception: " + context.exceptionText;
+            }
+            if (context.scriptSource !== "") {
+                text += "\nScript source: " + context.scriptSource;
+            }
+            if (context.exceptionLine !== "") {
+                text += "\nJSX source line: " + context.exceptionLine;
+            }
+            if (context.rawOutput !== "") {
+                text += "\n\nRaw helper output:\n" + context.rawOutput;
+            }
+            if (context.processLogContents !== "") {
+                text += "\n\nPowerShell process output:\n" + context.processLogContents;
+            }
+            if (context.logPath !== "") {
+                text += "\n\nDebug log:\n" + context.logPath;
+            }
+            if (context.logError !== "" || state.lastLogError !== "") {
+                text += "\n\nDebug log write issue:\n" + safeString(context.logError || state.lastLogError);
+            }
+        } else if (state.lastLogPath !== "") {
+            text += "\n\nDebug log:\n" + state.lastLogPath;
+        }
+
+        alert(text);
+    }
+
+    function updateFolderControls() {
+        var projectFolder;
+        var displayedFolderPath;
+
+        if (!state.ui) {
+            return;
+        }
+
+        projectFolder = getProjectStorageFolderForDisplay();
+        displayedFolderPath = projectFolder ? projectFolder.fsName : state.folderPath;
+
+        state.ui.folderField.text = displayedFolderPath;
+        state.ui.openFolderButton.enabled = !!projectFolder || (state.folderPath !== "" && new Folder(state.folderPath).exists);
+        state.ui.openLogButton.enabled = true;
+    }
+
+    function setImportButtonEnabled(enabled) {
+        if (state.ui && state.ui.importButton) {
+            state.ui.importButton.enabled = enabled;
+        }
+    }
+
+    function refreshLayout() {
+        try {
+            if (state.win && state.win.layout) {
+                state.win.layout.layout(true);
+                state.win.layout.resize();
+            }
+        } catch (layoutError) {
+        }
+    }
+
+    function handlePanelKeydown(event) {
+        var keyName;
+        var isPasteShortcut;
+        try {
+            keyName = String(event.keyName).toUpperCase();
+            isPasteShortcut = ((IS_WINDOWS && event.ctrlKey) || (IS_MAC && event.metaKey)) && keyName === "V";
+            if (isPasteShortcut && event.target !== state.ui.folderField) {
+                runImportWorkflow();
+                try {
+                    event.preventDefault();
+                } catch (preventError) {
+                }
+            }
+        } catch (keyError) {
+        }
+    }
+
+    function setDropdownSelection(dropdown, value) {
+        var i;
+        for (i = 0; i < dropdown.items.length; i += 1) {
+            if (dropdown.items[i].text === value) {
+                dropdown.selection = dropdown.items[i];
+                return;
+            }
+        }
+        dropdown.selection = dropdown.items[1];
+    }
+
+    function getSelectedScalingMode() {
+        var savedValue;
+
+        if (state.ui && state.ui.scalingDropdown && state.ui.scalingDropdown.selection) {
+            return state.ui.scalingDropdown.selection.text;
+        }
+        savedValue = getSetting(KEY_SCALING_MODE, "Fit");
+        if (savedValue === "None" || savedValue === "Fit" || savedValue === "Fill") {
+            return savedValue;
+        }
+        return "Fit";
+    }
+
+    function createAttemptContext() {
+        var logFile = getDebugLogFile(null);
+        var context = {
+            startedAt: String(new Date()),
+            stage: "Ready",
+            platformBranch: IS_WINDOWS ? "Windows" : (IS_MAC ? "macOS" : "Unsupported"),
+            selectedFolderFullName: "",
+            selectedFolderNativePath: "",
+            selectedFolderExists: "",
+            writeTestFileFullName: "",
+            writeTestFileNativePath: "",
+            writeTestFileError: "",
+            runtimeFolderFullName: "",
+            runtimeFolderNativePath: "",
+            helperFullName: "",
+            helperNativePath: "",
+            helperParentFullName: "",
+            helperParentNativePath: "",
+            helperParentExists: "",
+            helperParentError: "",
+            helperExistsAfterWrite: "",
+            helperFileLength: "",
+            helperCleanupError: "",
+            resultFileFullName: "",
+            resultFileNativePath: "",
+            resultFileExistsAfterExecution: "",
+            resultFileLength: "",
+            resultFileCleanupError: "",
+            processLogFullName: "",
+            processLogNativePath: "",
+            processLogExistsAfterExecution: "",
+            processLogLength: "",
+            processLogContents: "",
+            processLogCleanupError: "",
+            resolvedPowerShellExecutable: "",
+            resolvedCmdExecutable: "",
+            destinationFullName: "",
+            destinationNativePath: "",
+            destinationPath: "",
+            command: "",
+            rawOutput: "",
+            selfTestOutput: "",
+            parsedResponse: "",
+            returnedPath: "",
+            returnedFileExists: "",
+            returnedFileSize: "",
+            exceptionText: "",
+            exceptionLine: "",
+            scriptSource: "",
+            logPath: "",
+            logFullName: "",
+            logNativePath: "",
+            logError: ""
+        };
+
+        if (logFile) {
+            context.logPath = logFile.fsName;
+            context.logFullName = logFile.fullName;
+            context.logNativePath = logFile.fsName;
+            state.lastLogPath = logFile.fsName;
+        }
+
+        return context;
+    }
+
+    function getDebugLogFile(context) {
+        var folder;
+        var file;
+        var fallbackFolder;
+        var fallbackFile;
+
+        if (IS_WINDOWS) {
+            return getWindowsDebugLogFile(context);
+        }
+
+        try {
+            folder = getSupportFolder();
+            file = new File(folder.fullName + "/" + DEBUG_FILE_NAME);
+            return file;
+        } catch (userDataError) {
+            try {
+                fallbackFolder = new Folder(Folder.temp.fullName);
+                if (IS_WINDOWS) {
+                    testWindowsFolderWritable(fallbackFolder, null);
+                }
+                fallbackFile = new File(fallbackFolder.fullName + "/ae_clipboard_importer_debug.log");
+                return fallbackFile;
+            } catch (tempError) {
+                state.lastLogError = "Could not create a debug log path. " + describeException(tempError);
+                if (context) {
+                    context.logError = state.lastLogError;
+                }
+                return null;
+            }
+        }
+    }
+
+    function getWindowsDebugLogFile(context) {
+        var baseFolder;
+        var logFile;
+        var fallbackFolder;
+        var fallbackFile;
+
+        try {
+            baseFolder = new Folder(Folder.userData.fullName + "/" + SUPPORT_FOLDER_NAME);
+            ensureFolderTree(baseFolder);
+            logFile = new File(baseFolder.fullName + "/" + DEBUG_FILE_NAME);
+            return logFile;
+        } catch (userDataError) {
+            if (context) {
+                context.logError = "Could not create Windows debug log under userData. " + describeException(userDataError);
+            }
+            try {
+                fallbackFolder = new Folder(Folder.temp.fullName);
+                testWindowsFolderWritable(fallbackFolder, null);
+                fallbackFile = new File(fallbackFolder.fullName + "/ae_clipboard_importer_debug.log");
+                return fallbackFile;
+            } catch (tempError) {
+                state.lastLogError = "Could not create a Windows debug log path. " + describeException(tempError);
+                if (context) {
+                    context.logError = state.lastLogError;
+                }
+                return null;
+            }
+        }
+    }
+
+    function appendDiagnosticLog(context, label) {
+        var file;
+        var lines;
+
+        if (!context || context.logPath === "") {
+            return;
+        }
+
+        file = new File(context.logPath);
+        lines = [];
+        lines.push("");
+        lines.push("============================================================");
+        lines.push(safeString(label));
+        lines.push("Date: " + String(new Date()));
+        lines.push("Operating system: " + $.os);
+        lines.push("Detected platform branch: " + safeString(context.platformBranch));
+        lines.push("After Effects version: " + getAfterEffectsVersion());
+        lines.push("Selected folder fullName: " + safeString(context.selectedFolderFullName));
+        lines.push("Selected folder fsName: " + safeString(context.selectedFolderNativePath));
+        lines.push("Selected folder exists: " + safeString(context.selectedFolderExists));
+        lines.push("Write-test file fullName: " + safeString(context.writeTestFileFullName));
+        lines.push("Write-test file fsName: " + safeString(context.writeTestFileNativePath));
+        lines.push("Write-test File.error: " + safeString(context.writeTestFileError));
+        lines.push("Runtime folder fullName: " + safeString(context.runtimeFolderFullName));
+        lines.push("Runtime folder fsName: " + safeString(context.runtimeFolderNativePath));
+        lines.push("PowerShell/JXA helper fullName: " + safeString(context.helperFullName));
+        lines.push("PowerShell/JXA helper fsName: " + safeString(context.helperNativePath));
+        lines.push("Helper parent fullName: " + safeString(context.helperParentFullName));
+        lines.push("Helper parent fsName: " + safeString(context.helperParentNativePath));
+        lines.push("Helper parent exists: " + safeString(context.helperParentExists));
+        lines.push("Helper parent error: " + safeString(context.helperParentError));
+        lines.push("Helper exists after writing: " + safeString(context.helperExistsAfterWrite));
+        lines.push("Helper file length: " + safeString(context.helperFileLength));
+        lines.push("Helper cleanup error: " + safeString(context.helperCleanupError));
+        lines.push("Result file fullName: " + safeString(context.resultFileFullName));
+        lines.push("Result file fsName: " + safeString(context.resultFileNativePath));
+        lines.push("Result file exists after execution: " + safeString(context.resultFileExistsAfterExecution));
+        lines.push("Result file length: " + safeString(context.resultFileLength));
+        lines.push("Result file cleanup error: " + safeString(context.resultFileCleanupError));
+        lines.push("Process output log fullName: " + safeString(context.processLogFullName));
+        lines.push("Process output log fsName: " + safeString(context.processLogNativePath));
+        lines.push("Process output log exists after execution: " + safeString(context.processLogExistsAfterExecution));
+        lines.push("Process output log length: " + safeString(context.processLogLength));
+        lines.push("Complete process output: " + safeString(context.processLogContents));
+        lines.push("Process output log cleanup error: " + safeString(context.processLogCleanupError));
+        lines.push("Resolved PowerShell executable: " + safeString(context.resolvedPowerShellExecutable));
+        lines.push("Resolved cmd.exe executable: " + safeString(context.resolvedCmdExecutable));
+        lines.push("Destination image fullName: " + safeString(context.destinationFullName));
+        lines.push("Destination image fsName: " + safeString(context.destinationNativePath));
+        lines.push("Exact command: " + safeString(context.command));
+        lines.push("Self-test output: " + safeString(context.selfTestOutput));
+        lines.push("Raw helper output: " + safeString(context.rawOutput));
+        lines.push("Parsed protocol result: " + safeString(context.parsedResponse));
+        lines.push("Returned image path: " + safeString(context.returnedPath));
+        lines.push("Returned image exists: " + safeString(context.returnedFileExists));
+        lines.push("Returned image file size: " + safeString(context.returnedFileSize));
+        lines.push("Current processing stage: " + safeString(context.stage));
+        lines.push("JSX exception: " + safeString(context.exceptionText));
+        lines.push("JSX source file: " + safeString(context.scriptSource));
+        lines.push("JSX source line: " + safeString(context.exceptionLine));
+        lines.push("Debug log fullName: " + safeString(context.logFullName));
+        lines.push("Debug log fsName: " + safeString(context.logNativePath));
+
+        try {
+            file.encoding = "UTF-8";
+            file.lineFeed = IS_WINDOWS ? "Windows" : "Unix";
+            if (!file.open("a")) {
+                context.logError = "Could not open debug log for appending.\nLog URI: " + file.fullName + "\nLog native path: " + file.fsName + "\nParent exists: " + file.parent.exists + "\nFile error: " + safeString(file.error || "Unknown");
+                state.lastLogError = context.logError;
+                return;
+            }
+            file.write(lines.join("\n") + "\n");
+            file.close();
+        } catch (logError) {
+            try {
+                file.close();
+            } catch (closeError) {
+            }
+            context.logError = "Could not write debug log. " + describeException(logError);
+            state.lastLogError = context.logError;
+        }
+    }
+
+    function recordSelectedFolderDiagnostics(context, folder) {
+        if (!context || !folder) {
+            return;
+        }
+        context.selectedFolderFullName = safeString(folder.fullName);
+        context.selectedFolderNativePath = safeString(folder.fsName);
+        context.selectedFolderExists = folder.exists ? "true" : "false";
+    }
+
+    function recordWriteTestDiagnostics(context, file, errorText) {
+        if (!context || !file) {
+            return;
+        }
+        context.writeTestFileFullName = safeString(file.fullName);
+        context.writeTestFileNativePath = safeString(file.fsName);
+        context.writeTestFileError = safeString(errorText || file.error || "");
+    }
+
+    function recordRuntimeFolderDiagnostics(context, folder) {
+        if (!context || !folder) {
+            return;
+        }
+        context.runtimeFolderFullName = safeString(folder.fullName);
+        context.runtimeFolderNativePath = safeString(folder.fsName);
+    }
+
+    function recordHelperDiagnostics(context, helperFile) {
+        if (!context || !helperFile) {
+            return;
+        }
+        context.helperFullName = safeString(helperFile.fullName);
+        context.helperNativePath = safeString(helperFile.fsName);
+        try {
+            context.helperParentFullName = safeString(helperFile.parent.fullName);
+            context.helperParentNativePath = safeString(helperFile.parent.fsName);
+            context.helperParentExists = helperFile.parent.exists ? "true" : "false";
+            context.helperParentError = safeString(helperFile.parent.error || "");
+        } catch (parentError) {
+            context.helperParentError = describeException(parentError);
+        }
+        try {
+            context.helperExistsAfterWrite = helperFile.exists ? "true" : "false";
+            context.helperFileLength = helperFile.exists ? String(helperFile.length) : "";
+        } catch (lengthError) {
+            context.helperFileLength = "Could not read length: " + describeException(lengthError);
+        }
+    }
+
+    function getAfterEffectsVersion() {
+        try {
+            return app.version;
+        } catch (versionError) {
+            return "";
+        }
+    }
+
+    function makeHelperError(code, message, rawOutput) {
+        return { ok: false, path: "", code: safeString(code), message: safeString(message), rawOutput: safeString(rawOutput) };
+    }
+
+    function makeScriptError(code, status, detail, context) {
+        var errorObject = { isClipboardImporterError: true, code: safeString(code), status: safeString(status), detail: safeString(detail), line: "" };
+        if (context) {
+            context.exceptionText = errorObject.detail;
+        }
+        return errorObject;
+    }
+
+    function safeString(value) {
+        if (value === undefined || value === null) {
+            return "";
+        }
+        return String(value);
+    }
+
+    function trimString(value) {
+        return safeString(value).replace(/^\s+/, "").replace(/\s+$/, "");
+    }
+
+    function startsWith(value, prefix) {
+        return safeString(value).indexOf(prefix) === 0;
+    }
+
+    function normalizeLineEndings(value) {
+        return safeString(value).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    }
+
+    function describeException(errorObject) {
+        var text = "";
+        if (errorObject && errorObject.isClipboardImporterError) {
+            return errorObject.detail;
+        }
+        try {
+            if (errorObject && errorObject.message) {
+                text = safeString(errorObject.message);
+            } else {
+                text = safeString(errorObject);
+            }
+        } catch (describeError) {
+            text = safeString(errorObject);
+        }
+        return text;
+    }
+
+    function getExceptionLine(errorObject) {
+        try {
+            if (errorObject && errorObject.line) {
+                return safeString(errorObject.line);
+            }
+        } catch (lineError) {
+        }
+        return "";
+    }
+
+    function getExceptionFileName(errorObject) {
+        try {
+            if (errorObject && errorObject.fileName) {
+                return safeString(errorObject.fileName);
+            }
+        } catch (fileNameError) {
+        }
+        return "";
+    }
+
+    function isPositiveNumber(value) {
+        return typeof value === "number" && isFinite(value) && value > 0;
+    }
+
+    function quoteWindowsArgument(value) {
+        var text = safeString(value);
+        return "\"" + text.replace(/"/g, "\\\"") + "\"";
+    }
+
+    function quoteWindowsCmdOuterArgument(value) {
+        return "\"" + safeString(value) + "\"";
+    }
+
+    function quoteForMacShell(value) {
+        var text = safeString(value);
+        return "'" + text.replace(/'/g, "'\\''") + "'";
+    }
+
+    function isFileInsideFolder(file, folder) {
+        var filePath;
+        var folderPath;
+        try {
+            filePath = normalizeComparePath(file.fsName);
+            folderPath = normalizeComparePath(folder.fsName);
+            if (folderPath.charAt(folderPath.length - 1) !== "/" && folderPath.charAt(folderPath.length - 1) !== "\\") {
+                folderPath += "/";
+            }
+            return filePath.indexOf(folderPath.replace(/\\/g, "/")) === 0;
+        } catch (pathError) {
+            return false;
+        }
+    }
+
+    function normalizeComparePath(path) {
+        return safeString(path).replace(/\\/g, "/").toLowerCase();
+    }
+
+    function getFileExtension(path) {
+        var text = safeString(path);
+        var slash = Math.max(text.lastIndexOf("/"), text.lastIndexOf("\\"));
+        var dot = text.lastIndexOf(".");
+        if (dot <= slash || dot < 0) {
+            return "";
+        }
+        return text.substring(dot + 1).toLowerCase();
+    }
+
+    function isSupportedImageExtension(extension) {
+        var ext = safeString(extension).toLowerCase();
+        return ext === "png" || ext === "jpg" || ext === "jpeg" || ext === "webp" || ext === "bmp" || ext === "gif" || ext === "tif" || ext === "tiff" || ext === "psd";
+    }
+
+    function generateUniqueDestinationFile(folder, extension) {
+        var i;
+        var file;
+        var cleanExtension = safeString(extension).replace(/^\./, "").toLowerCase();
+        if (cleanExtension === "") {
+            cleanExtension = "png";
+        }
+        for (i = 0; i < 1000; i += 1) {
+            file = new File(folder.fullName + "/clipboard_" + makeTimestamp() + "_" + randomDigits(4) + "." + cleanExtension);
+            if (!file.exists) {
+                return file;
+            }
+        }
+        throw makeScriptError("IMAGE_EXPORT_FAILED", "Clipboard image save failed", "Could not generate a unique destination image path.", null);
+    }
+
+    function getWindowsPowerShellExecutable() {
+        var root = $.getenv("SystemRoot");
+        var candidate;
+        if (!root || root === "") {
+            root = $.getenv("windir");
+        }
+        if (root && root !== "") {
+            candidate = new File(root + "\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+            if (candidate.exists) {
+                return candidate.fsName;
+            }
+        }
+        return "powershell.exe";
+    }
+
+    function getWindowsCmdExecutable() {
+        var root = $.getenv("SystemRoot");
+        var candidate;
+        if (!root || root === "") {
+            root = $.getenv("windir");
+        }
+        if (root && root !== "") {
+            candidate = new File(root + "\\System32\\cmd.exe");
+            if (candidate.exists) {
+                return candidate.fsName;
+            }
+        }
+        return "cmd.exe";
+    }
+
+    function makeTimestamp() {
+        var d = new Date();
+        return String(d.getFullYear()) + padNumber(d.getMonth() + 1, 2) + padNumber(d.getDate(), 2) + "_" + padNumber(d.getHours(), 2) + padNumber(d.getMinutes(), 2) + padNumber(d.getSeconds(), 2) + "_" + padNumber(d.getMilliseconds(), 3);
+    }
+
+    function padNumber(value, width) {
+        var text = String(value);
+        while (text.length < width) {
+            text = "0" + text;
+        }
+        return text;
+    }
+
+    function randomDigits(width) {
+        var max = Math.pow(10, width);
+        return padNumber(Math.floor(Math.random() * max), width);
+    }
+
+    function getWindowsClipboardHelperSource() {
+        var lines = [];
+        lines.push("param([Parameter(Mandatory=$true)][string]$DestinationPath, [Parameter(Mandatory=$true)][string]$ResultPath)");
+        lines.push("$ErrorActionPreference = 'Stop'");
+        lines.push("try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}");
+        lines.push("function Sanitize-ProtocolText([string]$Text) {");
+        lines.push("    if ($null -eq $Text) { return '' }");
+        lines.push("    return ([string]$Text).Replace([Environment]::NewLine, ' ').Replace(\"`r\", ' ').Replace(\"`n\", ' ')");
+        lines.push("}");
+        lines.push("function Write-ProtocolResult([string]$ProtocolLine) {");
+        lines.push("    $line = Sanitize-ProtocolText $ProtocolLine");
+        lines.push("    try {");
+        lines.push("        if ([string]::IsNullOrEmpty($ResultPath)) { throw 'ResultPath was empty.' }");
+        lines.push("        $resultFolder = [System.IO.Path]::GetDirectoryName($ResultPath)");
+        lines.push("        if ([string]::IsNullOrEmpty($resultFolder)) { throw 'ResultPath parent folder was empty.' }");
+        lines.push("        if (-not [System.IO.Directory]::Exists($resultFolder)) { [System.IO.Directory]::CreateDirectory($resultFolder) | Out-Null }");
+        lines.push("        [System.IO.File]::WriteAllText($ResultPath, $line, (New-Object System.Text.UTF8Encoding($false)))");
+        lines.push("    } catch {");
+        lines.push("        $writeMessage = Sanitize-ProtocolText $_.Exception.Message");
+        lines.push("        try { [Console]::Error.WriteLine('AE_CLIPBOARD_ERROR|RESULT_FILE_WRITE_FAILED|' + $writeMessage) } catch {}");
+        lines.push("    }");
+        lines.push("    try { [Console]::WriteLine($line) } catch {}");
+        lines.push("}");
+        lines.push("function EmitOk([string]$Path) { Write-ProtocolResult ('AE_CLIPBOARD_OK|' + $Path) }");
+        lines.push("function EmitError([string]$Code, [string]$Message) { Write-ProtocolResult ('AE_CLIPBOARD_ERROR|' + $Code + '|' + (Sanitize-ProtocolText $Message)) }");
+        lines.push("function IsSupportedImageFile([string]$Path) {");
+        lines.push("    if ([string]::IsNullOrEmpty($Path)) { return $false }");
+        lines.push("    $ext = [System.IO.Path]::GetExtension($Path)");
+        lines.push("    if ([string]::IsNullOrEmpty($ext)) { return $false }");
+        lines.push("    $ext = $ext.ToLowerInvariant()");
+        lines.push("    $supported = @('.png','.jpg','.jpeg','.webp','.bmp','.gif','.tif','.tiff','.psd')");
+        lines.push("    foreach ($item in $supported) { if ($item -eq $ext) { return $true } }");
+        lines.push("    return $false");
+        lines.push("}");
+        lines.push("function RemoveIfExists([string]$Path) {");
+        lines.push("    try { if (-not [string]::IsNullOrEmpty($Path) -and [System.IO.File]::Exists($Path)) { [System.IO.File]::Delete($Path) } } catch {}");
+        lines.push("}");
+        lines.push("function NewDestinationForSource([string]$RequestedDestination, [string]$SourcePath) {");
+        lines.push("    $sourceExt = [System.IO.Path]::GetExtension($SourcePath).ToLowerInvariant()");
+        lines.push("    $destExt = [System.IO.Path]::GetExtension($RequestedDestination).ToLowerInvariant()");
+        lines.push("    if ($sourceExt -eq $destExt -and -not [System.IO.File]::Exists($RequestedDestination)) { return $RequestedDestination }");
+        lines.push("    $folder = [System.IO.Path]::GetDirectoryName($RequestedDestination)");
+        lines.push("    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($RequestedDestination)");
+        lines.push("    for ($i = 0; $i -lt 1000; $i++) {");
+        lines.push("        if ($i -eq 0) { $name = $baseName + $sourceExt } else { $name = $baseName + '_' + $i + $sourceExt }");
+        lines.push("        $candidate = [System.IO.Path]::Combine($folder, $name)");
+        lines.push("        if (-not [System.IO.File]::Exists($candidate)) { return $candidate }");
+        lines.push("    }");
+        lines.push("    throw 'Could not generate a collision-free destination file.'");
+        lines.push("}");
+        lines.push("function ValidateSavedFile([string]$Path) {");
+        lines.push("    if (-not [System.IO.File]::Exists($Path)) { EmitError 'DESTINATION_FILE_MISSING' ('The destination file was not created: ' + $Path); return $false }");
+        lines.push("    $info = New-Object System.IO.FileInfo($Path)");
+        lines.push("    if ($info.Length -le 0) { RemoveIfExists $Path; EmitError 'ZERO_BYTE_FILE' ('The destination file is zero bytes: ' + $Path); return $false }");
+        lines.push("    return $true");
+        lines.push("}");
+        lines.push("try {");
+        lines.push("    if ([string]::IsNullOrEmpty($DestinationPath)) { EmitError 'INVALID_ARGUMENT' 'No destination image path was received.'; exit 2 }");
+        lines.push("    if ([string]::IsNullOrEmpty($ResultPath)) { EmitError 'INVALID_ARGUMENT' 'No result file path was received.'; exit 2 }");
+        lines.push("    $destinationFolder = [System.IO.Path]::GetDirectoryName($DestinationPath)");
+        lines.push("    if ([string]::IsNullOrEmpty($destinationFolder) -or -not [System.IO.Directory]::Exists($destinationFolder)) { EmitError 'IMAGE_EXPORT_FAILED' ('The destination folder does not exist: ' + $destinationFolder); exit 3 }");
+        lines.push("    Add-Type -AssemblyName System.Windows.Forms");
+        lines.push("    Add-Type -AssemblyName System.Drawing");
+        lines.push("    if ([System.Windows.Forms.Clipboard]::ContainsFileDropList()) {");
+        lines.push("        $dropList = [System.Windows.Forms.Clipboard]::GetFileDropList()");
+        lines.push("        foreach ($sourcePath in $dropList) {");
+        lines.push("            if ([System.IO.File]::Exists($sourcePath) -and (IsSupportedImageFile $sourcePath)) {");
+        lines.push("                $finalDestination = NewDestinationForSource $DestinationPath $sourcePath");
+        lines.push("                try {");
+        lines.push("                    if ([System.IO.File]::Exists($finalDestination)) { EmitError 'FILE_COPY_FAILED' ('Destination already exists; refusing to overwrite: ' + $finalDestination); exit 4 }");
+        lines.push("                    [System.IO.File]::Copy($sourcePath, $finalDestination, $false)");
+        lines.push("                    if (ValidateSavedFile $finalDestination) { EmitOk ([System.IO.Path]::GetFullPath($finalDestination)); exit 0 }");
+        lines.push("                    exit 5");
+        lines.push("                } catch {");
+        lines.push("                    RemoveIfExists $finalDestination");
+        lines.push("                    EmitError 'FILE_COPY_FAILED' $_.Exception.Message");
+        lines.push("                    exit 4");
+        lines.push("                }");
+        lines.push("            }");
+        lines.push("        }");
+        lines.push("    }");
+        lines.push("    if ([System.Windows.Forms.Clipboard]::ContainsImage()) {");
+        lines.push("        $image = $null");
+        lines.push("        try {");
+        lines.push("            if ([System.IO.File]::Exists($DestinationPath)) { EmitError 'IMAGE_EXPORT_FAILED' ('Destination already exists; refusing to overwrite: ' + $DestinationPath); exit 6 }");
+        lines.push("            $image = [System.Windows.Forms.Clipboard]::GetImage()");
+        lines.push("            if ($null -eq $image) { EmitError 'NO_IMAGE' 'No image data was available in the clipboard.'; exit 7 }");
+        lines.push("            $image.Save($DestinationPath, [System.Drawing.Imaging.ImageFormat]::Png)");
+        lines.push("            if (ValidateSavedFile $DestinationPath) { EmitOk ([System.IO.Path]::GetFullPath($DestinationPath)); exit 0 }");
+        lines.push("            exit 8");
+        lines.push("        } catch {");
+        lines.push("            RemoveIfExists $DestinationPath");
+        lines.push("            EmitError 'IMAGE_EXPORT_FAILED' $_.Exception.Message");
+        lines.push("            exit 6");
+        lines.push("        } finally {");
+        lines.push("            if ($null -ne $image) { $image.Dispose() }");
+        lines.push("        }");
+        lines.push("    }");
+        lines.push("    EmitError 'NO_IMAGE' 'No supported image or image file was found in the clipboard.'");
+        lines.push("    exit 9");
+        lines.push("} catch {");
+        lines.push("    EmitError 'POWERSHELL_RUNTIME_ERROR' $_.Exception.Message");
+        lines.push("    exit 1");
+        lines.push("}");
+        return lines.join("\r\n");
+    }
+
+    function getMacClipboardHelperSource() {
+        var lines = [];
+        lines.push("ObjC.import('AppKit');");
+        lines.push("ObjC.import('Foundation');");
+        lines.push("function safeString(value) { if (value === undefined || value === null) { return ''; } return String(value); }");
+        lines.push("function unwrap(value) { try { return ObjC.unwrap(value); } catch (error) { return safeString(value); } }");
+        lines.push("function emitReady() { console.log('AE_HELPER_READY'); }");
+        lines.push("function emitOk(path) { console.log('AE_CLIPBOARD_OK|' + path); }");
+        lines.push("function emitError(code, message) { var text = safeString(message).replace(/\\r/g, ' ').replace(/\\n/g, ' '); console.log('AE_CLIPBOARD_ERROR|' + code + '|' + text); }");
+        lines.push("function describeError(error) { try { if (error && error.localizedDescription) { return unwrap(error.localizedDescription); } if (error && error.message) { return error.message; } return safeString(error); } catch (inner) { return safeString(error); } }");
+        lines.push("function toNumber(value) { var unwrapped = unwrap(value); var numberValue = Number(unwrapped); if (isNaN(numberValue)) { return 0; } return numberValue; }");
+        lines.push("function standardPath(path) { return unwrap($(safeString(path)).stringByStandardizingPath); }");
+        lines.push("function extensionOf(path) { return safeString(unwrap($(path).pathExtension)).toLowerCase(); }");
+        lines.push("function deletingExtension(path) { return unwrap($(path).stringByDeletingPathExtension); }");
+        lines.push("function isSupportedImageFile(path) {");
+        lines.push("    var ext = extensionOf(path);");
+        lines.push("    var supported = ['png','jpg','jpeg','webp','bmp','gif','tif','tiff','psd'];");
+        lines.push("    var i;");
+        lines.push("    for (i = 0; i < supported.length; i += 1) { if (supported[i] === ext) { return true; } }");
+        lines.push("    return false;");
+        lines.push("}");
+        lines.push("function removeIfExists(path) { try { $.NSFileManager.defaultManager.removeItemAtPathError($(path), null); } catch (error) {} }");
+        lines.push("function fileExists(path) { return $.NSFileManager.defaultManager.fileExistsAtPath($(path)); }");
+        lines.push("function fileSize(path) {");
+        lines.push("    var attrs = $.NSFileManager.defaultManager.attributesOfItemAtPathError($(path), null);");
+        lines.push("    if (!attrs) { return -1; }");
+        lines.push("    return toNumber(attrs.objectForKey($.NSFileSize));");
+        lines.push("}");
+        lines.push("function validateDestination(path) {");
+        lines.push("    if (!fileExists(path)) { emitError('DESTINATION_FILE_MISSING', 'The destination file was not created: ' + path); return false; }");
+        lines.push("    if (fileSize(path) <= 0) { removeIfExists(path); emitError('ZERO_BYTE_FILE', 'The destination file is zero bytes: ' + path); return false; }");
+        lines.push("    return true;");
+        lines.push("}");
+        lines.push("function uniqueAlternativeDestination(destinationPath, extension) {");
+        lines.push("    var cleanExtension = safeString(extension).replace(/^\\./, '').toLowerCase();");
+        lines.push("    var base = deletingExtension(destinationPath);");
+        lines.push("    var candidate = base + '.' + cleanExtension;");
+        lines.push("    var i;");
+        lines.push("    if (!fileExists(candidate)) { return candidate; }");
+        lines.push("    for (i = 1; i < 1000; i += 1) {");
+        lines.push("        candidate = base + '_' + i + '.' + cleanExtension;");
+        lines.push("        if (!fileExists(candidate)) { return candidate; }");
+        lines.push("    }");
+        lines.push("    throw new Error('Could not generate a collision-free destination file.');");
+        lines.push("}");
+        lines.push("function destinationForSourceFile(destinationPath, sourcePath) {");
+        lines.push("    var sourceExtension = extensionOf(sourcePath);");
+        lines.push("    var destinationExtension = extensionOf(destinationPath);");
+        lines.push("    if (sourceExtension === destinationExtension && !fileExists(destinationPath)) { return destinationPath; }");
+        lines.push("    return uniqueAlternativeDestination(destinationPath, sourceExtension);");
+        lines.push("}");
+        lines.push("function copyImageFile(sourcePath, destinationPath) {");
+        lines.push("    var fm = $.NSFileManager.defaultManager;");
+        lines.push("    var finalDestination = destinationForSourceFile(destinationPath, sourcePath);");
+        lines.push("    var error = Ref();");
+        lines.push("    if (!fileExists(sourcePath)) { emitError('SOURCE_FILE_NOT_FOUND', 'The copied image file no longer exists: ' + sourcePath); return true; }");
+        lines.push("    if (fileExists(finalDestination)) { emitError('FILE_COPY_FAILED', 'Destination already exists; refusing to overwrite: ' + finalDestination); return true; }");
+        lines.push("    var ok = fm.copyItemAtPathToPathError($(sourcePath), $(finalDestination), error);");
+        lines.push("    if (!ok) { removeIfExists(finalDestination); emitError('FILE_COPY_FAILED', describeError(error[0])); return true; }");
+        lines.push("    if (!validateDestination(finalDestination)) { return true; }");
+        lines.push("    emitOk(finalDestination);");
+        lines.push("    return true;");
+        lines.push("}");
+        lines.push("function tryCopiedFiles(pasteboard, destinationPath) {");
+        lines.push("    var fm = $.NSFileManager.defaultManager;");
+        lines.push("    var items = pasteboard.pasteboardItems;");
+        lines.push("    var i;");
+        lines.push("    if (items) {");
+        lines.push("        for (i = 0; i < toNumber(items.count); i += 1) {");
+        lines.push("            var item = items.objectAtIndex(i);");
+        lines.push("            var urlString = item.stringForType('public.file-url');");
+        lines.push("            if (urlString) {");
+        lines.push("                var url = $.NSURL.URLWithString(urlString);");
+        lines.push("                var sourcePath = standardPath(unwrap(url.path));");
+        lines.push("                if (fm.fileExistsAtPath($(sourcePath)) && isSupportedImageFile(sourcePath)) { return copyImageFile(sourcePath, destinationPath); }");
+        lines.push("            }");
+        lines.push("        }");
+        lines.push("    }");
+        lines.push("    var names = pasteboard.propertyListForType('NSFilenamesPboardType');");
+        lines.push("    if (names) {");
+        lines.push("        for (i = 0; i < toNumber(names.count); i += 1) {");
+        lines.push("            var path = standardPath(unwrap(names.objectAtIndex(i)));");
+        lines.push("            if (fm.fileExistsAtPath($(path)) && isSupportedImageFile(path)) { return copyImageFile(path, destinationPath); }");
+        lines.push("        }");
+        lines.push("    }");
+        lines.push("    return false;");
+        lines.push("}");
+        lines.push("function dataForAnyType(pasteboard, types) {");
+        lines.push("    var i;");
+        lines.push("    var data;");
+        lines.push("    for (i = 0; i < types.length; i += 1) {");
+        lines.push("        try { data = pasteboard.dataForType(types[i]); if (data && toNumber(data.length) > 0) { return data; } } catch (typeError) {}");
+        lines.push("    }");
+        lines.push("    return null;");
+        lines.push("}");
+        lines.push("function writePngData(data, destinationPath) {");
+        lines.push("    if (!data || toNumber(data.length) <= 0) { emitError('PNG_DATA_READ_FAILED', 'No PNG data object was available.'); return true; }");
+        lines.push("    if (fileExists(destinationPath)) { emitError('IMAGE_EXPORT_FAILED', 'Destination already exists; refusing to overwrite: ' + destinationPath); return true; }");
+        lines.push("    var ok = data.writeToFileAtomically($(destinationPath), true);");
+        lines.push("    if (!ok) { removeIfExists(destinationPath); emitError('IMAGE_EXPORT_FAILED', 'The clipboard image data could not be written atomically.'); return true; }");
+        lines.push("    if (!validateDestination(destinationPath)) { return true; }");
+        lines.push("    emitOk(destinationPath);");
+        lines.push("    return true;");
+        lines.push("}");
+        lines.push("function tryRawImageData(pasteboard, destinationPath) {");
+        lines.push("    var pngTypes = ['public.png'];");
+        lines.push("    try { if ($.NSPasteboardTypePNG) { pngTypes.push($.NSPasteboardTypePNG); } } catch (pngConstantError) {}");
+        lines.push("    var pngData = dataForAnyType(pasteboard, pngTypes);");
+        lines.push("    if (pngData) { return writePngData(pngData, destinationPath); }");
+        lines.push("    var tiffTypes = ['public.tiff', 'NSTIFFPboardType'];");
+        lines.push("    try { if ($.NSPasteboardTypeTIFF) { tiffTypes.push($.NSPasteboardTypeTIFF); } } catch (tiffConstantError) {}");
+        lines.push("    var tiffData = dataForAnyType(pasteboard, tiffTypes);");
+        lines.push("    if (tiffData) {");
+        lines.push("        var rep = $.NSBitmapImageRep.imageRepWithData(tiffData);");
+        lines.push("        if (!rep) { emitError('TIFF_CONVERSION_FAILED', 'TIFF clipboard data could not be decoded.'); return true; }");
+        lines.push("        var converted = rep.representationUsingTypeProperties($.NSPNGFileType, $({}));");
+        lines.push("        if (!converted || toNumber(converted.length) <= 0) { emitError('TIFF_CONVERSION_FAILED', 'TIFF clipboard data could not be converted to PNG.'); return true; }");
+        lines.push("        return writePngData(converted, destinationPath);");
+        lines.push("    }");
+        lines.push("    return false;");
+        lines.push("}");
+        lines.push("function run(argv) {");
+        lines.push("    try {");
+        lines.push("        if (argv && argv.length > 0 && safeString(argv[0]) === '--self-test') { emitReady(); return; }");
+        lines.push("        if (!argv || argv.length < 1 || safeString(argv[0]) === '') { emitError('INVALID_ARGUMENT', 'No destination image path was received by the JXA helper.'); return; }");
+        lines.push("        var destinationPath = standardPath(argv[0]);");
+        lines.push("        var destinationFolder = standardPath(unwrap($(destinationPath).stringByDeletingLastPathComponent));");
+        lines.push("        var fm = $.NSFileManager.defaultManager;");
+        lines.push("        var isDirectory = Ref();");
+        lines.push("        if (!fm.fileExistsAtPathIsDirectory($(destinationFolder), isDirectory) || !isDirectory[0]) { emitError('IMAGE_EXPORT_FAILED', 'The destination folder does not exist: ' + destinationFolder); return; }");
+        lines.push("        var pasteboard = $.NSPasteboard.generalPasteboard;");
+        lines.push("        if (tryCopiedFiles(pasteboard, destinationPath)) { return; }");
+        lines.push("        if (tryRawImageData(pasteboard, destinationPath)) { return; }");
+        lines.push("        emitError('NO_IMAGE', 'No supported image was found in the clipboard.');");
+        lines.push("    } catch (error) {");
+        lines.push("        emitError('JXA_RUNTIME_ERROR', describeError(error));");
+        lines.push("    }");
+        lines.push("}");
+        return lines.join("\n");
+    }
+
+    $.global.ClipboardImageImporterCore = {
+        buildUI: buildUI,
+        importImageFromClipboard: importImageFromClipboard,
+        runImportWorkflow: runImportWorkflow,
+        loadSettings: loadSettings,
+        saveSettings: saveSettings
+    };
+})(this);
